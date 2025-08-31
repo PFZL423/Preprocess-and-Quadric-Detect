@@ -75,26 +75,26 @@ public:
     }
 
     // 获取带法线点云 (仅当计算了法线时可用)
-    // thrust::device_vector<GPUPointNormal3f> &getPointsWithNormals()
-    // {
-    //     if (!has_normals_)
-    //     {
-    //         throw std::runtime_error("Normals not computed! Check hasNormals() first.");
-    //     }
-    //     return *d_points_normal_;
-    // }
-    // const thrust::device_vector<GPUPointNormal3f> &getPointsWithNormals() const
-    // {
-    //     if (!has_normals_)
-    //     {
-    //         throw std::runtime_error("Normals not computed! Check hasNormals() first.");
-    //     }
-    //     return *d_points_normal_;
-    // }
+    thrust::device_vector<GPUPointNormal3f> &getPointsWithNormals()
+    {
+        if (!has_normals_)
+        {
+            throw std::runtime_error("Normals not computed! Check hasNormals() first.");
+        }
+        return *d_points_normal_;
+    }
+    const thrust::device_vector<GPUPointNormal3f> &getPointsWithNormals() const
+    {
+        if (!has_normals_)
+        {
+            throw std::runtime_error("Normals not computed! Check hasNormals() first.");
+        }
+        return *d_points_normal_;
+    }
 
     // 下载到CPU (可选接口)
     std::vector<GPUPoint3f> downloadPoints() const;
-    // std::vector<GPUPointNormal3f> downloadPointsWithNormals() const;
+    std::vector<GPUPointNormal3f> downloadPointsWithNormals() const;
 
 private:
     friend class GPUPreprocessor;
@@ -102,13 +102,13 @@ private:
     bool has_normals_ = false;
     size_t point_count_ = 0;
     thrust::device_vector<GPUPoint3f> *d_points_ = nullptr;
-    // thrust::device_vector<GPUPointNormal3f> *d_points_normal_ = nullptr;
+    thrust::device_vector<GPUPointNormal3f> *d_points_normal_ = nullptr;
 
     void setPointsRef(thrust::device_vector<GPUPoint3f> *points) { d_points_ = points; }
     void setPointsNormalRef(thrust::device_vector<GPUPointNormal3f> *points_normal)
     {
-        // d_points_normal_ = points_normal;
-        // has_normals_ = true;
+        d_points_normal_ = points_normal;
+        has_normals_ = true;
     }
     void setPointCount(size_t count) { point_count_ = count; }
 };
@@ -144,16 +144,16 @@ public:
     const PerformanceStats &getLastStats() const { return last_stats_; }
 
     // CUDA核函数的包裹函数声明
-    // void cuda_convertToPointsWithNormals(GPUPoint3f *input_points, GPUPointNormal3f *output_points, size_t point_count);
+    void cuda_convertToPointsWithNormals(GPUPoint3f *input_points, GPUPointNormal3f *output_points, size_t point_count);
     size_t cuda_compactValidPoints(
         GPUPoint3f *input_points, bool *valid_flags,
         GPUPoint3f *output_points, size_t input_count);
     size_t cuda_performGroundRemoval(
         GPUPoint3f *input_points, size_t input_count,
         GPUPoint3f *output_points, float threshold);
-    // void cuda_performNormalEstimation(
-    //     GPUPoint3f *points, GPUPointNormal3f *points_with_normals,
-    //     size_t point_count, float radius, int k);
+    void cuda_performNormalEstimation(
+        GPUPoint3f *points, GPUPointNormal3f *points_with_normals,
+        size_t point_count, float radius, int k);
     size_t cuda_performOutlierRemoval(
         GPUPoint3f *input_points, size_t input_count,
         GPUPoint3f *output_points, const PreprocessConfig &config);
@@ -176,7 +176,7 @@ private:
     thrust::device_vector<GPUPoint3f> d_input_points_;
     thrust::device_vector<GPUPoint3f> d_temp_points_;
     thrust::device_vector<GPUPoint3f> d_output_points_;
-    // thrust::device_vector<GPUPointNormal3f> d_output_points_normal_;
+    thrust::device_vector<GPUPointNormal3f> d_output_points_normal_;
 
     // 体素下采样相关
     thrust::device_vector<uint64_t> d_voxel_keys_;

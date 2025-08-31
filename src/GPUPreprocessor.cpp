@@ -67,25 +67,26 @@ ProcessingResult GPUPreprocessor::process(const pcl::PointCloud<pcl::PointXYZ>::
 // ========== 内存管理 ==========
 
 
-void GPUPreprocessor::clearMemory()
-{
-    d_input_points_.clear();
-    d_temp_points_.clear();
-    d_output_points_.clear();
-    // d_output_points_normal_.clear();
-    d_voxel_keys_.clear();
-    d_voxel_boundaries_.clear();
-    d_unique_keys_.clear();
-    d_neighbor_counts_.clear();
-    d_valid_flags_.clear();
-    d_knn_indices_.clear();
-    d_knn_distances_.clear();
+// void GPUPreprocessor::clearMemory()
+// {
+//     d_input_points_.clear();
+//     d_temp_points_.clear();
+//     d_output_points_.clear();
+//     d_output_points_normal_.clear();
+//     d_voxel_keys_.clear();
+//     d_voxel_boundaries_.clear();
+//     d_unique_keys_.clear();
+//     d_neighbor_counts_.clear();
+//     d_valid_flags_.clear();
+//     d_knn_indices_.clear();
+//     d_knn_distances_.clear();
 
-    d_input_points_.shrink_to_fit();
-    d_temp_points_.shrink_to_fit();
-    d_output_points_.shrink_to_fit();
-    // d_output_points_normal_.shrink_to_fit();
-}
+//     d_input_points_.shrink_to_fit();
+//     d_temp_points_.shrink_to_fit();
+//     d_output_points_.shrink_to_fit();
+//     d_output_points_normal_.shrink_to_fit();
+// }
+
 
 // ========== 内部处理流程 ==========
 
@@ -119,14 +120,14 @@ void GPUPreprocessor::preprocessOnGPU(const PreprocessConfig &config)
         cuda_launchGroundRemoval(config.ground_threshold);
     }
 
-    // // Step 4: 法线估计 (根据开关决定)
-    // if (config.compute_normals)
-    // {
-    //     auto start = std::chrono::high_resolution_clock::now();
-    //     launchNormalEstimation(config.normal_radius, config.normal_k);
-    //     auto end = std::chrono::high_resolution_clock::now();
-    //     last_stats_.normal_estimation_time_ms = std::chrono::duration<float, std::milli>(end - start).count();
-    // }
+    // Step 4: 法线估计 (根据开关决定)
+    if (config.compute_normals)
+    {
+        auto start = std::chrono::high_resolution_clock::now();
+        launchNormalEstimation(config.normal_radius, config.normal_k);
+        auto end = std::chrono::high_resolution_clock::now();
+        last_stats_.normal_estimation_time_ms = std::chrono::duration<float, std::milli>(end - start).count();
+    }
 }
 
 ProcessingResult GPUPreprocessor::createResult(const PreprocessConfig &config)
@@ -137,10 +138,10 @@ ProcessingResult GPUPreprocessor::createResult(const PreprocessConfig &config)
     result.setPointsRef(&d_output_points_);
     result.setPointCount(final_point_count);
 
-    // if (config.compute_normals)
-    // {
-    //     result.setPointsNormalRef(&d_output_points_normal_);
-    // }
+    if (config.compute_normals)
+    {
+        result.setPointsNormalRef(&d_output_points_normal_);
+    }
 
     return result;
 }
@@ -156,27 +157,27 @@ size_t GPUPreprocessor::getCurrentPointCount() const
 // ========== 修改launchNormalEstimation函数 ==========
 void GPUPreprocessor::launchNormalEstimation(float radius, int k)
 {
-    // std::cout << "[GPUPreprocessor] Starting normal estimation" << std::endl;
+    std::cout << "[GPUPreprocessor] Starting normal estimation" << std::endl;
 
-    // size_t point_count = d_temp_points_.size();
-    // if (point_count == 0)
-    //     return;
+    size_t point_count = d_temp_points_.size();
+    if (point_count == 0)
+        return;
 
-    // // ✅ 避开resize，用clear+reserve+手动构造
-    // d_output_points_normal_.clear();
-    // d_output_points_normal_.reserve(point_count);
+    //  避开resize，用clear+reserve+手动构造
+    d_output_points_normal_.clear();
+    d_output_points_normal_.reserve(point_count);
 
-    // // 创建临时的host_vector来构造数据
-    // std::vector<GPUPointNormal3f> h_temp(point_count);
-    // d_output_points_normal_ = h_temp; // 通过赋值避免resize
+    // 创建临时的host_vector来构造数据
+    std::vector<GPUPointNormal3f> h_temp(point_count);
+    d_output_points_normal_ = h_temp; // 通过赋值避免resize
 
-    // // 调用.cu文件中的CUDA实现
-    // cuda_performNormalEstimation(
-    //     thrust::raw_pointer_cast(d_temp_points_.data()),
-    //     thrust::raw_pointer_cast(d_output_points_normal_.data()),
-    //     point_count, radius, k);
+    // 调用.cu文件中的CUDA实现
+    cuda_performNormalEstimation(
+        thrust::raw_pointer_cast(d_temp_points_.data()),
+        thrust::raw_pointer_cast(d_output_points_normal_.data()),
+        point_count, radius, k);
 
-    // std::cout << "[GPUPreprocessor] Normal estimation completed for " << point_count << " points" << std::endl;
+    std::cout << "[GPUPreprocessor] Normal estimation completed for " << point_count << " points" << std::endl;
 }
 
 
@@ -194,35 +195,35 @@ std::vector<GPUPoint3f> ProcessingResult::downloadPoints() const
     return std::vector<GPUPoint3f>(host_points.begin(), host_points.end());
 }
 
-// std::vector<GPUPointNormal3f> ProcessingResult::downloadPointsWithNormals() const
-// {
-//     // if (!d_points_normal_)
-//     //     return {};
+std::vector<GPUPointNormal3f> ProcessingResult::downloadPointsWithNormals() const
+{
+    if (!d_points_normal_)
+        return {};
 
-//     // thrust::host_vector<GPUPointNormal3f> host_points = *d_points_normal_;
-//     // return std::vector<GPUPointNormal3f>(host_points.begin(), host_points.end());
-//     if (!has_normals_ || !d_points_normal_ || point_count_ == 0)
-//     {
-//         return {};
-//     }
+    thrust::host_vector<GPUPointNormal3f> host_points = *d_points_normal_;
+    return std::vector<GPUPointNormal3f>(host_points.begin(), host_points.end());
+    if (!has_normals_ || !d_points_normal_ || point_count_ == 0)
+    {
+        return {};
+    }
 
-//     // ✅ 使用 cudaMemcpy 替代 thrust::copy
-//     std::vector<GPUPointNormal3f> result(point_count_);
+    //  使用 cudaMemcpy 替代 thrust::copy
+    std::vector<GPUPointNormal3f> result(point_count_);
 
-//     cudaError_t error = cudaMemcpy(
-//         result.data(),                                      // 目标：CPU内存
-//         thrust::raw_pointer_cast(d_points_normal_->data()), // 源：GPU内存
-//         point_count_ * sizeof(GPUPointNormal3f),            // 大小
-//         cudaMemcpyDeviceToHost                              // 方向
-//     );
+    cudaError_t error = cudaMemcpy(
+        result.data(),                                      // 目标：CPU内存
+        thrust::raw_pointer_cast(d_points_normal_->data()), // 源：GPU内存
+        point_count_ * sizeof(GPUPointNormal3f),            // 大小
+        cudaMemcpyDeviceToHost                              // 方向
+    );
 
-//     if (error != cudaSuccess)
-//     {
-//         throw std::runtime_error("CUDA memcpy failed: " + std::string(cudaGetErrorString(error)));
-//     }
+    if (error != cudaSuccess)
+    {
+        throw std::runtime_error("CUDA memcpy failed: " + std::string(cudaGetErrorString(error)));
+    }
 
-//     return result;
-// }
+    return result;
+}
 
 std::vector<GPUPoint3f> GPUPreprocessor::convertPCLToGPU(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cpu_cloud)
 {

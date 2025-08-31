@@ -123,17 +123,17 @@ namespace NormalEstimation
         float radius,
         int k)
     {
-        // int idx = blockIdx.x * blockDim.x + threadIdx.x;
-        // if (idx >= point_count)
-        //     return;
+        int idx = blockIdx.x * blockDim.x + threadIdx.x;
+        if (idx >= point_count)
+            return;
 
-        // points_with_normals[idx].x = points[idx].x;
-        // points_with_normals[idx].y = points[idx].y;
-        // points_with_normals[idx].z = points[idx].z;
+        points_with_normals[idx].x = points[idx].x;
+        points_with_normals[idx].y = points[idx].y;
+        points_with_normals[idx].z = points[idx].z;
 
-        // points_with_normals[idx].normal_x = 0.0f;
-        // points_with_normals[idx].normal_y = 0.0f;
-        // points_with_normals[idx].normal_z = 1.0f;
+        points_with_normals[idx].normal_x = 0.0f;
+        points_with_normals[idx].normal_y = 0.0f;
+        points_with_normals[idx].normal_z = 1.0f;
     }
 }
 
@@ -178,36 +178,36 @@ namespace Utils
         GPUPointNormal3f *output_points,
         int point_count)
     {
-        // int idx = blockIdx.x * blockDim.x + threadIdx.x;
-        // if (idx >= point_count)
-        //     return;
+        int idx = blockIdx.x * blockDim.x + threadIdx.x;
+        if (idx >= point_count)
+            return;
 
-        // output_points[idx].x = input_points[idx].x;
-        // output_points[idx].y = input_points[idx].y;
-        // output_points[idx].z = input_points[idx].z;
-        // output_points[idx].normal_x = 0.0f;
-        // output_points[idx].normal_y = 0.0f;
-        // output_points[idx].normal_z = 1.0f;
+        output_points[idx].x = input_points[idx].x;
+        output_points[idx].y = input_points[idx].y;
+        output_points[idx].z = input_points[idx].z;
+        output_points[idx].normal_x = 0.0f;
+        output_points[idx].normal_y = 0.0f;
+        output_points[idx].normal_z = 1.0f;
     }
 }
 
 // ========== 🔥 核心改造：GPUPreprocessor成员函数 (全GPU框架风格) ==========
 
-// void GPUPreprocessor::cuda_performNormalEstimation(
-//     GPUPoint3f *points, GPUPointNormal3f *points_with_normals,
-//     size_t point_count, float radius, int k)
-// {
-//     if (point_count == 0)
-//         return;
+void GPUPreprocessor::cuda_performNormalEstimation(
+    GPUPoint3f *points, GPUPointNormal3f *points_with_normals,
+    size_t point_count, float radius, int k)
+{
+    if (point_count == 0)
+        return;
 
-//     dim3 block(256);
-//     dim3 grid((point_count + block.x - 1) / block.x);
+    dim3 block(256);
+    dim3 grid((point_count + block.x - 1) / block.x);
 
-//     // ✅ 直接使用传入的指针，避免device_vector构造
-//     NormalEstimation::estimateNormalsKernel<<<grid, block>>>(
-//         points, points_with_normals, point_count, radius, k);
-//     cudaDeviceSynchronize();
-// }
+    // 直接使用传入的指针，避免device_vector构造
+    NormalEstimation::estimateNormalsKernel<<<grid, block>>>(
+        points, points_with_normals, point_count, radius, k);
+    cudaDeviceSynchronize();
+}
 
 size_t GPUPreprocessor::cuda_compactValidPoints(
     GPUPoint3f *input_points, bool *valid_flags,
@@ -240,26 +240,26 @@ size_t GPUPreprocessor::cuda_compactValidPoints(
     return output_count;
 }
 
-// void GPUPreprocessor::cuda_convertToPointsWithNormals(
-//     GPUPoint3f *input_points, GPUPointNormal3f *output_points, size_t point_count)
-// {
-//     // if (point_count == 0)
-//     //     return;
+void GPUPreprocessor::cuda_convertToPointsWithNormals(
+    GPUPoint3f *input_points, GPUPointNormal3f *output_points, size_t point_count)
+{
+    if (point_count == 0)
+        return;
 
-//     // dim3 block(256);
-//     // dim3 grid((point_count + block.x - 1) / block.x);
+    dim3 block(256);
+    dim3 grid((point_count + block.x - 1) / block.x);
 
-//     // // ✅ 直接操作指针，避免device_vector构造
-//     // Utils::convertToPointNormalKernel<<<grid, block>>>(
-//     //     input_points, output_points, point_count);
-//     // cudaDeviceSynchronize();
-// }
+    // 直接操作指针，避免device_vector构造
+    Utils::convertToPointNormalKernel<<<grid, block>>>(
+        input_points, output_points, point_count);
+    cudaDeviceSynchronize();
+}
 
 // ========== 在.cu文件末尾添加所有GPU内存管理函数 ==========
 
 void GPUPreprocessor::cuda_initializeMemory(size_t max_points)
 {
-    // ✅ 在.cu文件中，所有resize都是安全的
+    // 在.cu文件中，所有resize都是安全的
     // 只调整大小，不初始化数据，等待后续填充
     if (d_voxel_keys_.size() < max_points)
     {
@@ -293,7 +293,7 @@ void GPUPreprocessor::cuda_initializeMemory(size_t max_points)
     // POD结构体只需要reserve即可，大小会在使用时正确设置
     d_temp_points_.reserve(max_points);
     d_output_points_.reserve(max_points);
-    // d_output_points_normal_.reserve(max_points);
+    d_output_points_normal_.reserve(max_points);
 }
 void GPUPreprocessor::cuda_launchVoxelFilter(float voxel_size)
 {
@@ -388,7 +388,7 @@ void GPUPreprocessor::cuda_launchVoxelFilter(float voxel_size)
         std::cerr << "[WARNING] Generic exception in GPU sort: " << e.what() << std::endl;
     }
 
-    // 🔄 最终fallback：CPU排序
+    // 最终fallback：CPU排序
     if (!sort_success)
     {
         std::cout << "[INFO] Falling back to CPU sort..." << std::endl;
@@ -419,7 +419,7 @@ void GPUPreprocessor::cuda_launchVoxelFilter(float voxel_size)
     std::cout << "  Total: " << total_time << " ms" << std::endl;
 }
 
-// 🚀 基数排序实现 - 专门优化64位整数keys
+//  基数排序实现 - 专门优化64位整数keys
 void radixSort(std::vector<size_t> &indices, const std::vector<uint64_t> &keys)
 {
     const size_t n = indices.size();
@@ -666,7 +666,7 @@ void GPUPreprocessor::cuda_launchOutlierRemoval(const PreprocessConfig &config)
     }
     cudaDeviceSynchronize();
 
-    // ✅ 直接过滤到临时存储，然后安全赋值
+    // 直接过滤到临时存储，然后安全赋值
     thrust::device_vector<GPUPoint3f> d_temp_result(input_count);
 
     auto new_end = thrust::copy_if(
@@ -712,7 +712,7 @@ void GPUPreprocessor::cuda_launchGroundRemoval(float threshold)
         input_count, threshold, 1000);
     cudaDeviceSynchronize();
 
-    // ✅ 直接过滤非地面点
+    // 直接过滤非地面点
     thrust::device_vector<GPUPoint3f> d_temp_result(input_count);
 
     auto new_end = thrust::copy_if(
@@ -747,7 +747,7 @@ void GPUPreprocessor::cuda_compactValidPoints()
     if (input_count == 0)
         return;
 
-    // ✅ 直接使用thrust::copy_if进行压缩
+    // 直接使用thrust::copy_if进行压缩
     thrust::device_vector<GPUPoint3f> d_temp_result(input_count);
 
     auto new_end = thrust::copy_if(
@@ -830,14 +830,14 @@ void GPUPreprocessor::convertToPointsWithNormals()
     if (point_count == 0)
         return;
 
-    // ✅ 在 .cu 文件中，resize 应该工作正常
-    // d_output_points_normal_.clear();
-    // d_output_points_normal_.resize(point_count);
+    //  在 .cu 文件中，resize 应该工作正常
+    d_output_points_normal_.clear();
+    d_output_points_normal_.resize(point_count);
 
-    // cuda_convertToPointsWithNormals(
-    //     thrust::raw_pointer_cast(d_temp_points_.data()),
-    //     thrust::raw_pointer_cast(d_output_points_normal_.data()),
-    //     point_count);
+    cuda_convertToPointsWithNormals(
+        thrust::raw_pointer_cast(d_temp_points_.data()),
+        thrust::raw_pointer_cast(d_output_points_normal_.data()),
+        point_count);
 }
 void GPUPreprocessor::reserveMemory(size_t max_points)
 {
@@ -845,9 +845,31 @@ void GPUPreprocessor::reserveMemory(size_t max_points)
     d_input_points_.resize(max_points);
     d_temp_points_.resize(max_points);
     d_output_points_.resize(max_points);
-    // d_output_points_normal_.resize(max_points);
+    d_output_points_normal_.resize(max_points);
     d_voxel_keys_.resize(max_points);
     d_valid_flags_.resize(max_points);
 
     std::cout << "[GPUPreprocessor] Pre-allocated memory for " << max_points << " points" << std::endl;
 }
+
+
+void GPUPreprocessor::clearMemory()
+{
+    d_input_points_.clear();
+    d_temp_points_.clear();
+    d_output_points_.clear();
+    d_output_points_normal_.clear();
+    d_voxel_keys_.clear();
+    d_voxel_boundaries_.clear();
+    d_unique_keys_.clear();
+    d_neighbor_counts_.clear();
+    d_valid_flags_.clear();
+    d_knn_indices_.clear();
+    d_knn_distances_.clear();
+
+    d_input_points_.shrink_to_fit();
+    d_temp_points_.shrink_to_fit();
+    d_output_points_.shrink_to_fit();
+    d_output_points_normal_.shrink_to_fit();
+}
+
