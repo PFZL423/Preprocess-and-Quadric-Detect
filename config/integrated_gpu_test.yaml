@@ -8,10 +8,10 @@ max_points: 6000 # 最大处理点数
 # GPU预处理参数
 preprocess:
   # 体素下采样
-  voxel_size: 0.08 # 体素大小 (米)
+  voxel_size: 0.03 # 体素大小 (米)
 
   # 法线计算 (关闭以提高性能)
-  compute_normals: false
+  compute_normals: true
 
   # 离群点移除
   enable_outlier_removal: true

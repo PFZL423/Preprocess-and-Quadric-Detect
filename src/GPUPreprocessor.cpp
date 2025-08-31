@@ -151,40 +151,6 @@ size_t GPUPreprocessor::getCurrentPointCount() const
     return d_output_points_.size();
 }
 
-// ========== 算法包装函数 (调用.cu中的实现) ==========
-
-
-// ========== 修改launchNormalEstimation函数 ==========
-void GPUPreprocessor::launchNormalEstimation(float radius, int k)
-{
-    std::cout << "[GPUPreprocessor] Starting normal estimation" << std::endl;
-
-    size_t point_count = d_temp_points_.size();
-    if (point_count == 0)
-        return;
-
-    //  避开resize，用clear+reserve+手动构造
-    d_output_points_normal_.clear();
-    d_output_points_normal_.reserve(point_count);
-
-    // 创建临时的host_vector来构造数据
-    std::vector<GPUPointNormal3f> h_temp(point_count);
-    d_output_points_normal_ = h_temp; // 通过赋值避免resize
-
-    // 调用.cu文件中的CUDA实现
-    cuda_performNormalEstimation(
-        thrust::raw_pointer_cast(d_temp_points_.data()),
-        thrust::raw_pointer_cast(d_output_points_normal_.data()),
-        point_count, radius, k);
-
-    std::cout << "[GPUPreprocessor] Normal estimation completed for " << point_count << " points" << std::endl;
-}
-
-
-// ========== 工具函数实现 ==========
-
-
-
 // ========== ProcessingResult 实现 ==========
 std::vector<GPUPoint3f> ProcessingResult::downloadPoints() const
 {

@@ -209,6 +209,11 @@ private:
     const thrust::device_vector<GPUPoint3f> &getOutputPoints() const { return d_output_points_; }
     const thrust::device_vector<GPUPoint3f> &getTempPoints() const { return d_temp_points_; }
 
+    // 新增少量必需的缓冲区
+    thrust::device_vector<int> d_hash_table_;          // 哈希表头指针
+    thrust::device_vector<uint64_t> d_point_hashes_;   // 复用 d_voxel_keys_
+
+
     // 工具函数
     void convertToPointsWithNormals();
     size_t getCurrentPointCount() const;

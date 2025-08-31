@@ -873,3 +873,346 @@ void GPUPreprocessor::clearMemory()
     d_output_points_normal_.shrink_to_fit();
 }
 
+
+// 添加到现有 .cu 文件中：
+
+namespace SpatialHashNormals {
+
+// 计算空间哈希值
+__device__ inline uint64_t computeSpatialHash(float x, float y, float z, float grid_size) {
+    int gx = __float2int_rd(x / grid_size);
+    int gy = __float2int_rd(y / grid_size);  
+    int gz = __float2int_rd(z / grid_size);
+    
+    // 简单哈希函数，避免碰撞
+    uint64_t hash = ((uint64_t)(gx + 1000000) * 73856093ULL) ^
+                    ((uint64_t)(gy + 1000000) * 19349663ULL) ^
+                    ((uint64_t)(gz + 1000000) * 83492791ULL);
+    return hash;
+}
+
+// 构建空间哈希表
+__global__ void buildSpatialHashKernel(
+    const GPUPoint3f* points,
+    uint64_t* point_hashes,
+    int* hash_table,
+    int* hash_entries,
+    int num_points,
+    float grid_size,
+    int hash_table_size)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_points) return;
+    
+    // 计算该点的哈希值
+    GPUPoint3f pt = points[idx];
+    uint64_t hash = computeSpatialHash(pt.x, pt.y, pt.z, grid_size);
+    point_hashes[idx] = hash;
+    
+    // 插入哈希表 (链表头插法)
+    int hash_slot = hash % hash_table_size;
+    int old_head = atomicExch(&hash_table[hash_slot], idx);
+    hash_entries[idx] = old_head; // hash_entries[i] = 下一个点的索引
+}
+
+// 在哈希网格中搜索邻居
+__device__ inline void searchHashGrid(
+    const GPUPoint3f& query_point,
+    const GPUPoint3f* all_points,
+    const uint64_t* point_hashes,
+    const int* hash_table,
+    const int* hash_entries,
+    int* neighbors,
+    float* distances,
+    int* neighbor_count,
+    float search_radius,
+    float grid_size,
+    int hash_table_size,
+    int max_neighbors)
+{
+    float radius_sq = search_radius * search_radius;
+    int found = 0;
+    
+    // 搜索3x3x3=27个邻近网格
+    int base_gx = __float2int_rd(query_point.x / grid_size);
+    int base_gy = __float2int_rd(query_point.y / grid_size);
+    int base_gz = __float2int_rd(query_point.z / grid_size);
+    
+    for (int dx = -1; dx <= 1; dx++) {
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                // 计算邻近网格的哈希
+                uint64_t grid_hash = computeSpatialHash(
+                    (base_gx + dx) * grid_size,
+                    (base_gy + dy) * grid_size, 
+                    (base_gz + dz) * grid_size,
+                    grid_size);
+                
+                int hash_slot = grid_hash % hash_table_size;
+                int current = hash_table[hash_slot];
+                
+                // 遍历该网格的链表
+                while (current != -1 && found < max_neighbors) {
+                    GPUPoint3f candidate = all_points[current];
+                    
+                    float dx_f = candidate.x - query_point.x;
+                    float dy_f = candidate.y - query_point.y;
+                    float dz_f = candidate.z - query_point.z;
+                    float dist_sq = dx_f*dx_f + dy_f*dy_f + dz_f*dz_f;
+                    
+                    if (dist_sq <= radius_sq && dist_sq > 0) { // 排除自己
+                        neighbors[found] = current;
+                        distances[found] = sqrtf(dist_sq);
+                        found++;
+                    }
+                    
+                    current = hash_entries[current];
+                }
+            }
+        }
+    }
+    
+    *neighbor_count = found;
+}
+
+__device__ inline void fastEigen3x3(float cov[6], float* normal, float* curvature) {
+    // 对于3x3对称矩阵，使用叉积方法求最小特征向量（最稳定）
+    // cov[0]=xx, cov[1]=yy, cov[2]=zz, cov[3]=xy, cov[4]=xz, cov[5]=yz
+    
+    // 构造矩阵的三行
+    float row0[3] = {cov[0], cov[3], cov[4]}; // [xx, xy, xz]
+    float row1[3] = {cov[3], cov[1], cov[5]}; // [xy, yy, yz] 
+    float row2[3] = {cov[4], cov[5], cov[2]}; // [xz, yz, zz]
+    
+    // 尝试三种不同的叉积组合，选择最大的
+    float cross01[3], cross02[3], cross12[3];
+    
+    // row0 × row1
+    cross01[0] = row0[1] * row1[2] - row0[2] * row1[1];
+    cross01[1] = row0[2] * row1[0] - row0[0] * row1[2];
+    cross01[2] = row0[0] * row1[1] - row0[1] * row1[0];
+    float norm01 = sqrtf(cross01[0]*cross01[0] + cross01[1]*cross01[1] + cross01[2]*cross01[2]);
+    
+    // row0 × row2
+    cross02[0] = row0[1] * row2[2] - row0[2] * row2[1];
+    cross02[1] = row0[2] * row2[0] - row0[0] * row2[2];
+    cross02[2] = row0[0] * row2[1] - row0[1] * row2[0];
+    float norm02 = sqrtf(cross02[0]*cross02[0] + cross02[1]*cross02[1] + cross02[2]*cross02[2]);
+    
+    // row1 × row2
+    cross12[0] = row1[1] * row2[2] - row1[2] * row2[1];
+    cross12[1] = row1[2] * row2[0] - row1[0] * row2[2];
+    cross12[2] = row1[0] * row2[1] - row1[1] * row2[0];
+    float norm12 = sqrtf(cross12[0]*cross12[0] + cross12[1]*cross12[1] + cross12[2]*cross12[2]);
+    
+    // 选择模长最大的叉积结果（最稳定）
+    if (norm01 >= norm02 && norm01 >= norm12 && norm01 > 1e-8f) {
+        normal[0] = cross01[0] / norm01;
+        normal[1] = cross01[1] / norm01;
+        normal[2] = cross01[2] / norm01;
+    } else if (norm02 >= norm12 && norm02 > 1e-8f) {
+        normal[0] = cross02[0] / norm02;
+        normal[1] = cross02[1] / norm02;
+        normal[2] = cross02[2] / norm02;
+    } else if (norm12 > 1e-8f) {
+        normal[0] = cross12[0] / norm12;
+        normal[1] = cross12[1] / norm12;
+        normal[2] = cross12[2] / norm12;
+    } else {
+        // 极端退化情况：矩阵几乎是奇异的
+        // 使用对角元素最小的方向作为法线
+        if (cov[0] <= cov[1] && cov[0] <= cov[2]) {
+            normal[0] = 1.0f; normal[1] = 0.0f; normal[2] = 0.0f;
+        } else if (cov[1] <= cov[2]) {
+            normal[0] = 0.0f; normal[1] = 1.0f; normal[2] = 0.0f;
+        } else {
+            normal[0] = 0.0f; normal[1] = 0.0f; normal[2] = 1.0f;
+        }
+    }
+    
+    // 计算曲率（最小特征值估计）
+    float trace = cov[0] + cov[1] + cov[2];
+    float min_eigenvalue = normal[0]*(cov[0]*normal[0] + cov[3]*normal[1] + cov[4]*normal[2]) +
+                          normal[1]*(cov[3]*normal[0] + cov[1]*normal[1] + cov[5]*normal[2]) +
+                          normal[2]*(cov[4]*normal[0] + cov[5]*normal[1] + cov[2]*normal[2]);
+    *curvature = (trace > 1e-8f) ? fabsf(min_eigenvalue) / trace : 0.0f;
+}
+
+
+// 空间哈希法线估计主kernel
+__global__ void spatialHashNormalsKernel(
+    const GPUPoint3f* points,
+    const uint64_t* point_hashes,
+    const int* hash_table,
+    const int* hash_entries,
+    GPUPointNormal3f* points_with_normals,
+    int num_points,
+    float search_radius,
+    int min_neighbors,
+    float grid_size,
+    int hash_table_size)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_points) return;
+    
+    GPUPoint3f query_point = points[idx];
+    
+    // 搜索邻居
+    int neighbors[64]; // 最多64个邻居
+    float distances[64];
+    int neighbor_count = 0;
+    
+    searchHashGrid(query_point, points, point_hashes, hash_table, hash_entries,
+                   neighbors, distances, &neighbor_count,
+                   search_radius, grid_size, hash_table_size, 64);
+    
+    // 🆕 自适应邻居搜索优化
+    // 在搜索邻居后，根据实际找到的邻居数量调整
+    if (neighbor_count < min_neighbors) {
+        // 邻居不足时，扩大搜索半径 (仅对当前点)
+        float extended_radius = search_radius * 1.5f;
+        
+        // 重新搜索 (只对少数点执行，不影响整体性能)
+        searchHashGrid(query_point, points, point_hashes, hash_table, hash_entries,
+                       neighbors, distances, &neighbor_count,
+                       extended_radius, grid_size, hash_table_size, 64);
+    }
+
+    // 如果邻居过多，选择最近的邻居
+    if (neighbor_count > 32) {
+        // 简单的部分排序，只保留最近的32个
+        for (int i = 0; i < 32; i++) {
+            for (int j = i + 1; j < neighbor_count; j++) {
+                if (distances[j] < distances[i]) {
+                    // 交换
+                    float temp_dist = distances[i];
+                    distances[i] = distances[j];
+                    distances[j] = temp_dist;
+                    
+                    int temp_idx = neighbors[i];
+                    neighbors[i] = neighbors[j];
+                    neighbors[j] = temp_idx;
+                }
+            }
+        }
+        neighbor_count = 32; // 只使用最近的32个
+    }
+    
+    // 复制点坐标
+    points_with_normals[idx].x = query_point.x;
+    points_with_normals[idx].y = query_point.y;
+    points_with_normals[idx].z = query_point.z;
+    
+    if (neighbor_count < min_neighbors) {
+        // 即使扩大搜索后仍然邻居不足，设为无效法线
+        points_with_normals[idx].normal_x = 0.0f;
+        points_with_normals[idx].normal_y = 0.0f;
+        points_with_normals[idx].normal_z = 0.0f;  // 设为0表示无效
+        return;
+    }
+    
+    // 计算质心
+    float cx = 0, cy = 0, cz = 0;
+    for (int i = 0; i < neighbor_count; i++) {
+        GPUPoint3f neighbor = points[neighbors[i]];
+        cx += neighbor.x;
+        cy += neighbor.y;
+        cz += neighbor.z;
+    }
+    cx /= neighbor_count;
+    cy /= neighbor_count;
+    cz /= neighbor_count;
+    
+    // 计算协方差矩阵
+    float cov[6] = {0}; // xx, yy, zz, xy, xz, yz
+    for (int i = 0; i < neighbor_count; i++) {
+        GPUPoint3f neighbor = points[neighbors[i]];
+        float dx = neighbor.x - cx;
+        float dy = neighbor.y - cy;
+        float dz = neighbor.z - cz;
+        
+        cov[0] += dx * dx; // xx
+        cov[1] += dy * dy; // yy
+        cov[2] += dz * dz; // zz
+        cov[3] += dx * dy; // xy
+        cov[4] += dx * dz; // xz
+        cov[5] += dy * dz; // yz
+    }
+    
+    // 计算法线
+    float normal[3];
+    float curvature;
+    fastEigen3x3(cov, normal, &curvature);
+    
+    // 对于椭球等几何体，不强制法线方向统一
+    // 法线方向应该由几何形状本身决定
+    // 这里可以选择性地根据几何特性调整方向，但不强制z>0
+    
+    // 输出结果
+    points_with_normals[idx].normal_x = normal[0];
+    points_with_normals[idx].normal_y = normal[1];
+    points_with_normals[idx].normal_z = normal[2];
+}
+
+} // namespace SpatialHashNormals
+
+
+// 替换现有的空函数实现：
+void GPUPreprocessor::launchNormalEstimation(float normal_radius, int normal_k) {
+    int point_count = getCurrentPointCount();
+    if (point_count == 0) return;
+    
+    // 参数设置
+    float grid_size = normal_radius * 0.5f; // 网格大小为搜索半径的一半
+    int hash_table_size = point_count * 2;  // 哈希表大小
+    int min_neighbors = max(2, normal_k / 6); // 降低最少邻居数要求，从 k/3 改为 k/6
+    
+    // 复用现有缓冲区
+    d_voxel_keys_.resize(point_count);        // 复用作为point_hashes
+    d_knn_indices_.resize(point_count);       // 复用作为hash_entries
+    
+    // 新分配哈希表
+    if (d_hash_table_.size() != hash_table_size) {
+        d_hash_table_.resize(hash_table_size);
+    }
+    
+    // 初始化哈希表为-1
+    thrust::fill(d_hash_table_.begin(), d_hash_table_.end(), -1);
+    
+    // 确保输出缓冲区足够大
+    d_output_points_normal_.resize(point_count);
+    
+    // 启动kernel
+    dim3 block(256);
+    dim3 grid((point_count + block.x - 1) / block.x);
+    
+    // Step 1: 构建空间哈希表
+    SpatialHashNormals::buildSpatialHashKernel<<<grid, block>>>(
+        thrust::raw_pointer_cast(d_temp_points_.data()),
+        thrust::raw_pointer_cast(d_voxel_keys_.data()),     // 复用
+        thrust::raw_pointer_cast(d_hash_table_.data()),
+        thrust::raw_pointer_cast(d_knn_indices_.data()),    // 复用
+        point_count,
+        grid_size,
+        hash_table_size
+    );
+    
+    cudaDeviceSynchronize(); // 确保哈希表构建完成
+    
+    // Step 2: 搜索邻居并计算法线
+    SpatialHashNormals::spatialHashNormalsKernel<<<grid, block>>>(
+        thrust::raw_pointer_cast(d_temp_points_.data()),
+        thrust::raw_pointer_cast(d_voxel_keys_.data()),     // point_hashes
+        thrust::raw_pointer_cast(d_hash_table_.data()),
+        thrust::raw_pointer_cast(d_knn_indices_.data()),    // hash_entries
+        thrust::raw_pointer_cast(d_output_points_normal_.data()),
+        point_count,
+        normal_radius,
+        min_neighbors,
+        grid_size,
+        hash_table_size
+    );
+    
+    cudaDeviceSynchronize();
+}
+

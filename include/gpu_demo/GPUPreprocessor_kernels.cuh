@@ -64,6 +64,53 @@ namespace OutlierRemoval
 }
 
 // ========== 法线估计相关 ==========
+
+namespace SpatialHashNormals {
+    
+    // 空间哈希表构建
+    __global__ void buildSpatialHashKernel(
+        const GPUPoint3f* points,
+        uint64_t* point_hashes,
+        int* hash_table,
+        int* hash_entries,
+        int num_points,
+        float grid_size,
+        int hash_table_size);
+    
+    // 基于空间哈希的KNN搜索 + 法线计算一体化
+    __global__ void spatialHashNormalsKernel(
+        const GPUPoint3f* points,
+        const uint64_t* point_hashes,
+        const int* hash_table,
+        const int* hash_entries,
+        GPUPointNormal3f* points_with_normals,
+        int num_points,
+        float search_radius,
+        int min_neighbors,
+        float grid_size,
+        int hash_table_size);
+    
+    // Device函数
+    __device__ inline uint64_t computeSpatialHash(
+        float x, float y, float z, float grid_size);
+    
+    __device__ inline void fastEigen3x3(
+        float cov[6], float* normal, float* curvature);
+    
+    __device__ inline void searchHashGrid(
+        const GPUPoint3f& query_point,
+        const GPUPoint3f* all_points,
+        const uint64_t* point_hashes,
+        const int* hash_table,
+        const int* hash_entries,
+        int* neighbors,
+        float* distances,
+        int* neighbor_count,
+        float search_radius,
+        float grid_size,
+        int hash_table_size,
+        int max_neighbors);
+}
 namespace NormalEstimation
 {
     // 法线估计主kernel
