@@ -9,7 +9,7 @@
         <!-- 从yaml文件加载的参数会自动传递给节点 -->
         
         <!-- 额外的测试特定参数 -->
-        <param name="max_points" value="6000" />
+        <param name="max_points" value="3200" />
         
         <!-- 重映射话题 -->
         <remap from="/generated_cloud" to="/generated_cloud" />

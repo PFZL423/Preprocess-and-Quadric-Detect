@@ -172,6 +172,9 @@ public:
     void processVoxelCentroids(size_t input_count);
 
 private:
+    // 基数排序临时缓冲区
+    thrust::device_vector<GPUPoint3f> d_radix_temp_points_;
+    thrust::device_vector<uint64_t> d_radix_temp_keys_;
     // GPU内存缓冲区
     thrust::device_vector<GPUPoint3f> d_input_points_;
     thrust::device_vector<GPUPoint3f> d_temp_points_;
@@ -213,7 +216,7 @@ private:
     thrust::device_vector<int> d_hash_table_;          // 哈希表头指针
     thrust::device_vector<uint64_t> d_point_hashes_;   // 复用 d_voxel_keys_
 
-
+    bool gpuBucketSort(size_t input_count);
     // 工具函数
     void convertToPointsWithNormals();
     size_t getCurrentPointCount() const;

@@ -206,6 +206,45 @@ namespace Utils
         GPUPointNormal3f *points_with_normals,
         int point_count);
 }
+namespace SpatialHashOutlier {
+    
+    // 离群点移除kernel
+    __global__ void spatialHashOutlierKernel(
+        const GPUPoint3f* input_points,
+        bool* is_valid,
+        const uint64_t* point_hashes,
+        const int* hash_table,
+        const int* hash_entries,
+        int num_points,
+        float search_radius,
+        int min_neighbors_threshold,
+        float grid_size,
+        int hash_table_size);
+    
+    // 离群点移除主函数
+    int launchSpatialHashOutlierRemoval(
+        const GPUPoint3f* d_input_points,
+        GPUPoint3f* d_output_points,
+        bool* d_valid_mask,
+        uint64_t* d_point_hashes,
+        int* d_hash_entries,
+        int* d_hash_table,
+        int point_count,
+        float outlier_radius,
+        int min_neighbors_threshold,
+        float grid_size,
+        int hash_table_size);
+    
+    // 公共哈希构建函数 (从法线估计中抽取)
+    void buildCommonSpatialHash(
+        const GPUPoint3f* points,
+        uint64_t* point_hashes,
+        int* hash_table,
+        int* hash_entries,
+        int point_count,
+        float grid_size,
+        int hash_table_size);
+}
 
 // ========== CUDA错误检查宏 ==========
 #define CUDA_CHECK(call)                                                                                \

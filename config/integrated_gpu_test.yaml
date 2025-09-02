@@ -3,7 +3,7 @@
 
 # 输入配置
 input_topic: "/generated_cloud"
-max_points: 6000 # 最大处理点数
+max_points: 3200 # 最大处理点数
 
 # GPU预处理参数
 preprocess:

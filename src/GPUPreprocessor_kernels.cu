@@ -63,6 +63,9 @@ namespace VoxelFilter
 
 namespace OutlierRemoval
 {
+    // ⚠️ 此命名空间的函数已被空间哈希实现替代
+    // 保留空实现以防头文件引用，但实际不再使用
+    
     __device__ inline float computeDistance(const GPUPoint3f &p1, const GPUPoint3f &p2)
     {
         float dx = p1.x - p2.x;
@@ -71,6 +74,7 @@ namespace OutlierRemoval
         return sqrtf(dx * dx + dy * dy + dz * dz);
     }
 
+    // 🚫 已弃用：O(N²)暴力实现，被空间哈希替代
     __global__ void radiusOutlierKernel(
         const GPUPoint3f *points,
         bool *valid_flags,
@@ -78,28 +82,13 @@ namespace OutlierRemoval
         float radius,
         int min_neighbors)
     {
+        // 空实现，不再使用
         int idx = blockIdx.x * blockDim.x + threadIdx.x;
-        if (idx >= point_count)
-            return;
-
-        const GPUPoint3f &query_point = points[idx];
-        int neighbor_count = 0;
-
-        for (int i = 0; i < point_count; ++i)
-        {
-            if (i == idx)
-                continue;
-
-            float dist = computeDistance(query_point, points[i]);
-            if (dist <= radius)
-            {
-                neighbor_count++;
-            }
-        }
-
-        valid_flags[idx] = (neighbor_count >= min_neighbors);
+        if (idx >= point_count) return;
+        valid_flags[idx] = true; // 默认所有点有效
     }
 
+    // 🚫 已弃用：统计离群点移除，未实现
     __global__ void statisticalOutlierKernel(
         const GPUPoint3f *points,
         bool *valid_flags,
@@ -110,7 +99,7 @@ namespace OutlierRemoval
         int idx = blockIdx.x * blockDim.x + threadIdx.x;
         if (idx >= point_count)
             return;
-        valid_flags[idx] = true;
+        valid_flags[idx] = true; // 默认所有点有效
     }
 }
 
@@ -354,46 +343,51 @@ void GPUPreprocessor::cuda_launchVoxelFilter(float voxel_size)
     auto sort_start = std::chrono::high_resolution_clock::now();
     bool sort_success = false;
 
-    // 🔥 首先尝试thrust::sort_by_key
-    try
+    // 🔥 首先尝试GPU桶排序
+    std::cout << "[INFO] Attempting GPU bucket sort..." << std::endl;
+    if (gpuBucketSort(input_count)) 
     {
-        auto keys_first = d_voxel_keys_.begin();
-        auto keys_last = keys_first + input_count;
-        auto values_first = d_temp_points_.begin();
-
-        thrust::sort_by_key(keys_first, keys_last, values_first);
         sort_success = true;
-        std::cout << "[INFO] GPU sort_by_key succeeded" << std::endl;
-    }
-    catch (const thrust::system::system_error &e)
+        std::cout << "[INFO] GPU bucket sort succeeded" << std::endl;
+    } 
+    else 
     {
-        std::cerr << "[WARNING] Thrust sort_by_key failed: " << e.what() << std::endl;
+    std::cerr << "[WARNING] GPU bucket sort failed, trying thrust..." << std::endl;
+    
+        // 🔥 备用方案：thrust::sort_by_key
+        try {
+            auto keys_first = d_voxel_keys_.begin();
+            auto keys_last = keys_first + input_count;
+            auto values_first = d_temp_points_.begin();
 
-        // 备用方案：stable_sort_by_key
-        try
-        {
-            thrust::stable_sort_by_key(d_voxel_keys_.begin(),
-                                       d_voxel_keys_.begin() + input_count,
-                                       d_temp_points_.begin());
+            thrust::sort_by_key(keys_first, keys_last, values_first);
             sort_success = true;
-            std::cout << "[INFO] GPU stable_sort_by_key succeeded" << std::endl;
+            std::cout << "[INFO] GPU sort_by_key succeeded" << std::endl;
         }
-        catch (const thrust::system::system_error &e2)
-        {
-            std::cerr << "[WARNING] Stable sort also failed: " << e2.what() << std::endl;
+        catch (const thrust::system::system_error &e) {
+            std::cerr << "[WARNING] Thrust sort_by_key failed: " << e.what() << std::endl;
+
+            // 备用方案：stable_sort_by_key
+            try {
+                thrust::stable_sort_by_key(d_voxel_keys_.begin(),
+                                        d_voxel_keys_.begin() + input_count,
+                                        d_temp_points_.begin());
+                sort_success = true;
+                std::cout << "[INFO] GPU stable_sort_by_key succeeded" << std::endl;
+            }
+            catch (const thrust::system::system_error &e2) {
+                std::cerr << "[WARNING] Stable sort also failed: " << e2.what() << std::endl;
+            }
         }
-    }
-    catch (const std::exception &e)
-    {
-        std::cerr << "[WARNING] Generic exception in GPU sort: " << e.what() << std::endl;
+        catch (const std::exception &e) {
+            std::cerr << "[WARNING] Generic exception in GPU sort: " << e.what() << std::endl;
+        }
     }
 
     // 最终fallback：CPU排序
-    if (!sort_success)
-    {
+    if (!sort_success) {
         std::cout << "[INFO] Falling back to CPU sort..." << std::endl;
-        if (!cpuFallbackSort(input_count))
-        {
+        if (!cpuFallbackSort(input_count)) {
             return;
         }
     }
@@ -403,7 +397,9 @@ void GPUPreprocessor::cuda_launchVoxelFilter(float voxel_size)
 
     // Step 5: 后续处理
     auto process_start = std::chrono::high_resolution_clock::now();
-    processVoxelCentroids(input_count);
+    // 🔧 修复：使用实际点云大小而不是原始输入大小
+    size_t actual_count = d_temp_points_.size();  
+    processVoxelCentroids(actual_count);
     auto process_end = std::chrono::high_resolution_clock::now();
     float process_time = std::chrono::duration<float, std::milli>(process_end - process_start).count();
 
@@ -569,6 +565,17 @@ bool GPUPreprocessor::cpuFallbackSort(size_t input_count)
 // 🔧 将后续处理拆分为独立函数
 void GPUPreprocessor::processVoxelCentroids(size_t input_count)
 {
+    // 🔍 调试信息：检查输入数据
+    std::cout << "[DEBUG] processVoxelCentroids input_count=" << input_count 
+              << ", d_temp_points_.size()=" << d_temp_points_.size() 
+              << ", d_voxel_keys_.size()=" << d_voxel_keys_.size() << std::endl;
+    
+    // 确保输入数据一致性
+    if (d_temp_points_.size() != input_count || d_voxel_keys_.size() != input_count) {
+        std::cerr << "[ERROR] Size mismatch in processVoxelCentroids!" << std::endl;
+        return;
+    }
+    
     // Step 3: 计算体素质心
     thrust::device_vector<int> d_point_counts(input_count);
     thrust::device_vector<int> d_ones(input_count, 1);
@@ -638,61 +645,62 @@ void GPUPreprocessor::processVoxelCentroids(size_t input_count)
     }
 }
 
-void GPUPreprocessor::cuda_launchOutlierRemoval(const PreprocessConfig &config)
-{
-    std::cout << "[GPUPreprocessor] Starting outlier removal" << std::endl;
-
-    size_t input_count = d_temp_points_.size();
-    if (input_count == 0)
+void GPUPreprocessor::cuda_launchOutlierRemoval(const PreprocessConfig &config) {
+    int point_count = getCurrentPointCount();
+    if (point_count == 0) {
+        std::cout << "[OutlierRemoval] No points to process" << std::endl;
         return;
-
-    // 直接在成员变量上操作
-    dim3 block(256);
-    dim3 grid((input_count + block.x - 1) / block.x);
-
-    if (config.outlier_method == PreprocessConfig::STATISTICAL)
-    {
-        OutlierRemoval::statisticalOutlierKernel<<<grid, block>>>(
-            thrust::raw_pointer_cast(d_temp_points_.data()),
-            thrust::raw_pointer_cast(d_valid_flags_.data()),
-            input_count, config.statistical_k, config.statistical_stddev);
     }
-    else
-    {
-        OutlierRemoval::radiusOutlierKernel<<<grid, block>>>(
-            thrust::raw_pointer_cast(d_temp_points_.data()),
-            thrust::raw_pointer_cast(d_valid_flags_.data()),
-            input_count, config.radius_search, config.min_radius_neighbors);
-    }
-    cudaDeviceSynchronize();
-
-    // 直接过滤到临时存储，然后安全赋值
-    thrust::device_vector<GPUPoint3f> d_temp_result(input_count);
-
-    auto new_end = thrust::copy_if(
-        d_temp_points_.begin(), d_temp_points_.begin() + input_count,
-        d_valid_flags_.begin(),
-        d_temp_result.begin(),
-        thrust::identity<bool>());
-
-    size_t output_count = new_end - d_temp_result.begin();
-
-    // 安全地更新成员变量
-    if (output_count > 0)
-    {
-        thrust::host_vector<GPUPoint3f> h_result(output_count);
-        thrust::copy_n(d_temp_result.begin(), output_count, h_result.begin());
-        d_output_points_ = h_result;
-    }
-    else
-    {
-        d_output_points_.clear();
-    }
-
-    d_temp_points_ = d_output_points_;
-
-    std::cout << "[GPUPreprocessor] Outlier removal: " << input_count << " -> " << output_count << " points" << std::endl;
+    
+    std::cout << "[OutlierRemoval] Processing " << point_count << " points" << std::endl;
+    std::cout << "[OutlierRemoval] Parameters: radius=" << config.radius_search 
+              << ", min_neighbors=" << config.min_radius_neighbors << std::endl;
+    
+    // 参数计算 - 🔧 针对体素下采样后的点云优化参数
+    float grid_size = config.radius_search * 0.4f;  // 减小网格大小，提高精度
+    int hash_table_size = point_count * 6;  // 🔧 进一步增大哈希表，减少冲突
+    
+    std::cout << "[OutlierRemoval] Grid size: " << grid_size 
+              << ", hash table size: " << hash_table_size << std::endl;
+    
+    // 确保缓冲区大小 (复用现有缓冲区)
+    d_voxel_keys_.resize(point_count);         // 复用作为point_hashes
+    d_knn_indices_.resize(point_count);        // 复用作为hash_entries  
+    d_hash_table_.resize(hash_table_size);
+    
+    // 临时有效性掩码
+    static thrust::device_vector<bool> d_valid_mask;
+    d_valid_mask.resize(point_count);
+    
+    // 临时输出缓冲区
+    static thrust::device_vector<GPUPoint3f> d_filtered_points;
+    d_filtered_points.resize(point_count);
+    
+    // 调用空间哈希离群点移除
+    int filtered_count = SpatialHashOutlier::launchSpatialHashOutlierRemoval(
+        thrust::raw_pointer_cast(d_temp_points_.data()),       // 输入
+        thrust::raw_pointer_cast(d_filtered_points.data()),    // 输出
+        thrust::raw_pointer_cast(d_valid_mask.data()),         // 掩码
+        thrust::raw_pointer_cast(d_voxel_keys_.data()),        // 复用哈希
+        thrust::raw_pointer_cast(d_knn_indices_.data()),       // 复用链表
+        thrust::raw_pointer_cast(d_hash_table_.data()),        // 哈希表
+        point_count,
+        config.radius_search,
+        config.min_radius_neighbors,
+        grid_size,
+        hash_table_size
+    );
+    
+    // 更新工作点云
+    d_temp_points_.resize(filtered_count);
+    thrust::copy(d_filtered_points.begin(), 
+                d_filtered_points.begin() + filtered_count,
+                d_temp_points_.begin());
+    
+    std::cout << "[OutlierRemoval] Result: " << point_count << " -> " << filtered_count 
+              << " points (removed " << (point_count - filtered_count) << " outliers)" << std::endl;
 }
+
 
 void GPUPreprocessor::cuda_launchGroundRemoval(float threshold)
 {
@@ -814,6 +822,9 @@ void GPUPreprocessor::cuda_uploadGPUPoints(const std::vector<GPUPoint3f> &cpu_po
         return;
     }
 
+    // 🔧 关键修复：正确设置d_temp_points_的逻辑大小
+    d_temp_points_.resize(cpu_points.size());
+
     // 确保传输完成
     cudaDeviceSynchronize();
 
@@ -848,7 +859,22 @@ void GPUPreprocessor::reserveMemory(size_t max_points)
     d_output_points_normal_.resize(max_points);
     d_voxel_keys_.resize(max_points);
     d_valid_flags_.resize(max_points);
+    d_radix_temp_points_.resize(max_points);
+    d_radix_temp_keys_.resize(max_points);
 
+
+    // d_input_points_.reserve(max_points);
+    // d_temp_points_.reserve(max_points);
+    // d_output_points_.reserve(max_points);
+    // d_output_points_normal_.reserve(max_points);
+    // d_voxel_keys_.reserve(max_points);
+    // d_voxel_boundaries_.reserve(max_points);
+    // d_unique_keys_.reserve(max_points);
+    // d_neighbor_counts_.reserve(max_points);
+    // d_valid_flags_.reserve(max_points);
+    // d_knn_indices_.reserve(max_points);
+    // d_knn_distances_.reserve(max_points);
+    // d_hash_table_.reserve(max_points);
     std::cout << "[GPUPreprocessor] Pre-allocated memory for " << max_points << " points" << std::endl;
 }
 
@@ -878,16 +904,46 @@ void GPUPreprocessor::clearMemory()
 
 namespace SpatialHashNormals {
 
-// 计算空间哈希值
-__device__ inline uint64_t computeSpatialHash(float x, float y, float z, float grid_size) {
-    int gx = __float2int_rd(x / grid_size);
-    int gy = __float2int_rd(y / grid_size);  
-    int gz = __float2int_rd(z / grid_size);
+// 计算空间哈希值 - 修复对称性问题
+// __device__ inline uint64_t computeSpatialHash(float x, float y, float z, float grid_size) {
+//     // 🔧 修复1: 使用正确的网格索引计算，避免负坐标偏差
+//     int gx = floorf(x / grid_size);  // 替换 __float2int_rd，使用标准向下取整
+//     int gy = floorf(y / grid_size);  
+//     int gz = floorf(z / grid_size);
     
-    // 简单哈希函数，避免碰撞
-    uint64_t hash = ((uint64_t)(gx + 1000000) * 73856093ULL) ^
-                    ((uint64_t)(gy + 1000000) * 19349663ULL) ^
-                    ((uint64_t)(gz + 1000000) * 83492791ULL);
+//     // 🔧 修复2: 改进哈希函数，确保正负坐标的对称性
+//     // 将网格坐标转换为无符号值，避免负数问题
+//     uint32_t ux = (uint32_t)(gx + 2147483647);  // 使用更大的偏移量，确保对称
+//     uint32_t uy = (uint32_t)(gy + 2147483647);
+//     uint32_t uz = (uint32_t)(gz + 2147483647);
+    
+//     // 🔧 修复3: 使用更好的哈希常数，减少碰撞（大质数）
+//     uint64_t hash = ((uint64_t)ux * 1073741827ULL) ^   // 2^30 - 5 (大质数)
+//                     ((uint64_t)uy * 1073741831ULL) ^   // 2^30 - 1 (大质数)  
+//                     ((uint64_t)uz * 1073741833ULL);    // 2^30 + 3 (大质数)
+//     return hash;
+// }
+
+__device__ inline uint64_t computeSpatialHash(float x, float y, float z, float grid_size) {
+    int gx = floorf(x / grid_size);
+    int gy = floorf(y / grid_size);
+    int gz = floorf(z / grid_size);
+    
+    // 🔥 修复：使用更大的对称偏移
+    const uint64_t OFFSET = 0x80000000ULL;  // 2^31，确保正负对称
+    
+    uint64_t ux = (uint64_t)(gx + OFFSET);
+    uint64_t uy = (uint64_t)(gy + OFFSET);
+    uint64_t uz = (uint64_t)(gz + OFFSET);
+    
+    // 🔥 使用更好的哈希混合
+    uint64_t hash = ux * 73856093ULL ^ uy * 19349663ULL ^ uz * 83492791ULL;
+    
+    // 额外的混合步骤，确保均匀分布
+    hash ^= hash >> 32;
+    hash *= 0x9e3779b97f4a7c15ULL;
+    hash ^= hash >> 32;
+    
     return hash;
 }
 
@@ -933,20 +989,43 @@ __device__ inline void searchHashGrid(
     float radius_sq = search_radius * search_radius;
     int found = 0;
     
-    // 搜索3x3x3=27个邻近网格
-    int base_gx = __float2int_rd(query_point.x / grid_size);
-    int base_gy = __float2int_rd(query_point.y / grid_size);
-    int base_gz = __float2int_rd(query_point.z / grid_size);
+    // 🔧 修复搜索网格计算，确保与哈希计算一致
+    int base_gx = floorf(query_point.x / grid_size);  
+    int base_gy = floorf(query_point.y / grid_size);
+    int base_gz = floorf(query_point.z / grid_size);
     
     for (int dx = -1; dx <= 1; dx++) {
         for (int dy = -1; dy <= 1; dy++) {
             for (int dz = -1; dz <= 1; dz++) {
-                // 计算邻近网格的哈希
-                uint64_t grid_hash = computeSpatialHash(
-                    (base_gx + dx) * grid_size,
-                    (base_gy + dy) * grid_size, 
-                    (base_gz + dz) * grid_size,
-                    grid_size);
+                // 🔧 关键修复：直接使用网格索引计算哈希，不再通过坐标转换
+                int grid_gx = base_gx + dx;
+                int grid_gy = base_gy + dy;
+                int grid_gz = base_gz + dz;
+                
+                // 与computeSpatialHash函数保持完全一致的计算
+                // 🚫 旧的哈希算法（保留注释）
+                // uint32_t ux = (uint32_t)(grid_gx + 2147483647);
+                // uint32_t uy = (uint32_t)(grid_gy + 2147483647);
+                // uint32_t uz = (uint32_t)(grid_gz + 2147483647);
+                // 
+                // uint64_t grid_hash = ((uint64_t)ux * 1073741827ULL) ^   // 与computeSpatialHash一致
+                //                     ((uint64_t)uy * 1073741831ULL) ^
+                //                     ((uint64_t)uz * 1073741833ULL);
+                
+                // 🔥 新的哈希算法：与computeSpatialHash完全一致
+                const uint64_t OFFSET = 0x80000000ULL;  // 2^31，确保正负对称
+                
+                uint64_t ux = (uint64_t)(grid_gx + OFFSET);
+                uint64_t uy = (uint64_t)(grid_gy + OFFSET);
+                uint64_t uz = (uint64_t)(grid_gz + OFFSET);
+                
+                // 🔥 使用更好的哈希混合
+                uint64_t grid_hash = ux * 73856093ULL ^ uy * 19349663ULL ^ uz * 83492791ULL;
+                
+                // 额外的混合步骤，确保均匀分布
+                grid_hash ^= grid_hash >> 32;
+                grid_hash *= 0x9e3779b97f4a7c15ULL;
+                grid_hash ^= grid_hash >> 32;
                 
                 int hash_slot = grid_hash % hash_table_size;
                 int current = hash_table[hash_slot];
@@ -1157,14 +1236,13 @@ __global__ void spatialHashNormalsKernel(
 } // namespace SpatialHashNormals
 
 
-// 替换现有的空函数实现：
 void GPUPreprocessor::launchNormalEstimation(float normal_radius, int normal_k) {
     int point_count = getCurrentPointCount();
     if (point_count == 0) return;
     
     // 参数设置
     float grid_size = normal_radius * 0.5f; // 网格大小为搜索半径的一半
-    int hash_table_size = point_count * 2;  // 哈希表大小
+    int hash_table_size = point_count * 4;  // 🔧 增大哈希表，减少冲突
     int min_neighbors = max(2, normal_k / 6); // 降低最少邻居数要求，从 k/3 改为 k/6
     
     // 复用现有缓冲区
@@ -1216,3 +1294,467 @@ void GPUPreprocessor::launchNormalEstimation(float normal_radius, int normal_k) 
     cudaDeviceSynchronize();
 }
 
+
+
+
+
+
+
+namespace SpatialHashOutlier {
+
+// 🔄 复用法线估计的完整空间哈希基础设施
+// 注意: 完全依赖 SpatialHashNormals 命名空间，不重复实现
+
+// 离群点检测kernel - 完全复用法线估计的邻居搜索基础设施
+__global__ void spatialHashOutlierKernel(
+    const GPUPoint3f* input_points,
+    bool* is_valid,
+    const uint64_t* point_hashes,
+    const int* hash_table,
+    const int* hash_entries,
+    int num_points,
+    float search_radius,
+    int min_neighbors_threshold,
+    float grid_size,
+    int hash_table_size)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_points) return;
+    
+    GPUPoint3f query_point = input_points[idx];
+    
+    // 🔄 完全复用法线估计的邻居搜索算法
+    int neighbors[32];  // 离群点检测不需要太多邻居，32个足够
+    float distances[32];
+    int neighbor_count = 0;
+    
+    // 直接调用法线估计的searchHashGrid函数
+    SpatialHashNormals::searchHashGrid(
+        query_point, input_points, point_hashes, hash_table, hash_entries,
+        neighbors, distances, &neighbor_count,
+        search_radius, grid_size, hash_table_size, 32);
+    
+    // 简单的邻居数量阈值判断
+    is_valid[idx] = (neighbor_count >= min_neighbors_threshold);
+}
+
+// 🚀 高度优化的离群点移除主函数 - 完全复用法线估计基础设施
+int launchSpatialHashOutlierRemoval(
+    const GPUPoint3f* d_input_points,
+    GPUPoint3f* d_output_points,
+    bool* d_valid_mask,
+    uint64_t* d_point_hashes,      // 复用法线估计的哈希缓冲区
+    int* d_hash_entries,           // 复用法线估计的链表缓冲区
+    int* d_hash_table,
+    int point_count,
+    float outlier_radius,
+    int min_neighbors_threshold,
+    float grid_size,
+    int hash_table_size)
+{
+    if (point_count == 0) return 0;
+    
+    // Step 1: 直接复用法线估计的哈希构建函数
+    // 清空哈希表
+    cudaMemset(d_hash_table, -1, hash_table_size * sizeof(int));
+    
+    dim3 block(256);
+    dim3 grid((point_count + block.x - 1) / block.x);
+    
+    // 直接调用法线估计的buildSpatialHashKernel
+    SpatialHashNormals::buildSpatialHashKernel<<<grid, block>>>(
+        d_input_points, d_point_hashes, d_hash_table, d_hash_entries,
+        point_count, grid_size, hash_table_size);
+    
+    cudaDeviceSynchronize();
+    
+    // Step 2: 执行离群点检测 (复用搜索算法)
+    spatialHashOutlierKernel<<<grid, block>>>(
+        d_input_points, d_valid_mask, d_point_hashes, d_hash_table, d_hash_entries,
+        point_count, outlier_radius, min_neighbors_threshold, grid_size, hash_table_size);
+    
+    cudaDeviceSynchronize();
+    
+    // Step 3: 压缩数组，移除离群点
+    auto end_it = thrust::copy_if(
+        thrust::device,
+        d_input_points,
+        d_input_points + point_count,
+        d_valid_mask,
+        d_output_points,
+        [] __device__ (bool valid) { return valid; }
+    );
+    
+    return end_it - d_output_points;
+}
+
+} // namespace SpatialHashOutlier
+
+
+
+
+
+
+
+//桶排序代替
+namespace GPUBucketSort {
+
+// Step 1: 分析key分布，确定桶的范围
+__global__ void analyzeKeyRangeKernel(
+    const uint64_t* keys, 
+    int count, 
+    uint64_t* min_key, 
+    uint64_t* max_key) {
+    
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= count) return;
+    
+    // 使用block-level reduction找min/max
+    __shared__ uint64_t smin[256], smax[256];
+    
+    smin[threadIdx.x] = (idx < count) ? keys[idx] : UINT64_MAX;
+    smax[threadIdx.x] = (idx < count) ? keys[idx] : 0;
+    
+    __syncthreads();
+    
+    // Reduction in shared memory
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride) {
+            smin[threadIdx.x] = min(smin[threadIdx.x], smin[threadIdx.x + stride]);
+            smax[threadIdx.x] = max(smax[threadIdx.x], smax[threadIdx.x + stride]);
+        }
+        __syncthreads();
+    }
+    
+    if (threadIdx.x == 0) {
+        atomicMin((unsigned long long*)min_key, (unsigned long long)smin[0]);
+        atomicMax((unsigned long long*)max_key, (unsigned long long)smax[0]);
+    }
+}
+
+// Step 2: 计算每个点属于哪个桶
+__global__ void computeBucketIndicesKernel(
+    const uint64_t* keys,
+    int* bucket_indices,
+    int count,
+    uint64_t min_key,
+    uint64_t key_range,
+    int num_buckets) {
+    
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= count) return;
+    
+    uint64_t key = keys[idx];
+    uint64_t normalized_key = key - min_key;
+    
+    // 避免除法，使用位运算（如果num_buckets是2的幂）
+    int bucket_id = (int)((normalized_key * num_buckets) / (key_range + 1));
+    bucket_id = min(bucket_id, num_buckets - 1);  // 确保不越界
+    
+    bucket_indices[idx] = bucket_id;
+}
+
+// Step 3: 统计每个桶的大小
+__global__ void countBucketSizesKernel(
+    const int* bucket_indices,
+    int* bucket_counts,
+    int count,
+    int num_buckets) {
+    
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= count) return;
+    
+    int bucket_id = bucket_indices[idx];
+    atomicAdd(&bucket_counts[bucket_id], 1);
+}
+
+// Step 4: 计算每个桶的起始位置（prefix sum）
+__global__ void computeBucketOffsetsKernel(
+    const int* bucket_counts,
+    int* bucket_offsets,
+    int num_buckets) {
+    
+    // 简单的sequential prefix sum (可以优化为并行)
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        bucket_offsets[0] = 0;
+        for (int i = 1; i < num_buckets; i++) {
+            bucket_offsets[i] = bucket_offsets[i-1] + bucket_counts[i-1];
+        }
+    }
+}
+
+// Step 5: 将数据分配到各个桶
+__global__ void distributeToBucketsKernel(
+    const GPUPoint3f* input_points,
+    const uint64_t* input_keys,
+    const int* bucket_indices,
+    const int* bucket_offsets,
+    GPUPoint3f* output_points,
+    uint64_t* output_keys,
+    int* bucket_positions,  // 每个桶当前位置的原子计数器
+    int count) {
+    
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= count) return;
+    
+    int bucket_id = bucket_indices[idx];
+    int pos = atomicAdd(&bucket_positions[bucket_id], 1);
+    int output_idx = bucket_offsets[bucket_id] + pos;
+    
+    output_points[output_idx] = input_points[idx];
+    output_keys[output_idx] = input_keys[idx];
+}
+
+// Step 6: 对每个桶内部排序（使用简单的并行插入排序）
+__global__ void sortWithinBucketsKernel(
+    GPUPoint3f* points,
+    uint64_t* keys,
+    const int* bucket_offsets,
+    const int* bucket_counts,
+    int num_buckets) {
+    
+    int bucket_id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (bucket_id >= num_buckets) return;
+    
+    int start = bucket_offsets[bucket_id];
+    int size = bucket_counts[bucket_id];
+    
+    if (size <= 1) return;
+    
+    // 🔥 单线程对每个桶进行插入排序
+    for (int i = start + 1; i < start + size; i++) {
+        uint64_t key = keys[i];
+        GPUPoint3f point = points[i];
+        int j = i - 1;
+        
+        // 标准插入排序
+        while (j >= start && keys[j] > key) {
+            keys[j + 1] = keys[j];
+            points[j + 1] = points[j];
+            j--;
+        }
+        keys[j + 1] = key;
+        points[j + 1] = point;
+    }
+}
+// 在GPUBucketSort namespace中添加：
+
+__global__ void radixSortWithinBucketsKernel(
+    GPUPoint3f* points,
+    uint64_t* keys,
+    GPUPoint3f* temp_points,  // 临时缓冲区
+    uint64_t* temp_keys,      // 临时缓冲区
+    const int* bucket_offsets,
+    const int* bucket_counts,
+    int num_buckets) {
+    
+    int bucket_id = blockIdx.x;
+    if (bucket_id >= num_buckets) return;
+    
+    int start = bucket_offsets[bucket_id];
+    int size = bucket_counts[bucket_id];
+    
+    if (size <= 1) return;
+    
+    // � 优化1: 使用warp内协作，每个桶32个线程
+    int lane = threadIdx.x;  // 0-31
+    int warp_size = 32;
+    
+    // 🚀 优化2: 8位基数排序，但并行处理
+    for (int pass = 0; pass < 8; pass++) {
+        int shift = pass * 8;
+        
+        // 🚀 优化3: 使用shared memory减少全局内存访问
+        __shared__ int shared_counts[256];
+        
+        // 初始化共享内存计数器（并行）
+        for (int i = lane; i < 256; i += warp_size) {
+            shared_counts[i] = 0;
+        }
+        __syncthreads();
+        
+        // Step 1: 并行统计字节值出现次数
+        for (int i = lane; i < size; i += warp_size) {
+            int digit = (keys[start + i] >> shift) & 0xFF;
+            atomicAdd(&shared_counts[digit], 1);
+        }
+        __syncthreads();
+        
+        // Step 2: 并行前缀和计算
+        // 简单的串行前缀和（由单线程完成，因为只有256个元素）
+        if (lane == 0) {
+            for (int i = 1; i < 256; i++) {
+                shared_counts[i] += shared_counts[i-1];
+            }
+        }
+        __syncthreads();
+        
+        // Step 3: 并行分配到临时数组
+        // 🚀 优化4: 使用局部原子操作减少冲突
+        for (int i = size - 1 - lane; i >= 0; i -= warp_size) {
+            if (i >= 0) {
+                int digit = (keys[start + i] >> shift) & 0xFF;
+                int pos = atomicSub(&shared_counts[digit], 1) - 1;
+                temp_keys[start + pos] = keys[start + i];
+                temp_points[start + pos] = points[start + i];
+            }
+        }
+        __syncthreads();
+        
+        // Step 4: 并行复制回原数组
+        for (int i = lane; i < size; i += warp_size) {
+            keys[start + i] = temp_keys[start + i];
+            points[start + i] = temp_points[start + i];
+        }
+        __syncthreads();
+    }
+}
+
+} // namespace GPUBucketSort
+
+
+
+bool GPUPreprocessor::gpuBucketSort(size_t input_count) {
+    const int NUM_BUCKETS = 256;
+    
+    std::cout << "[DEBUG] gpuBucketSort input_count=" << input_count 
+              << ", d_temp_points_.size()=" << d_temp_points_.size() 
+              << ", d_voxel_keys_.size()=" << d_voxel_keys_.size() << std::endl;
+    
+    try {
+        // 分配临时内存
+        thrust::device_vector<uint64_t> d_min_key(1, UINT64_MAX);
+        thrust::device_vector<uint64_t> d_max_key(1, 0);
+        thrust::device_vector<int> d_bucket_indices(input_count);
+        thrust::device_vector<int> d_bucket_counts(NUM_BUCKETS, 0);
+        thrust::device_vector<int> d_bucket_offsets(NUM_BUCKETS);
+        thrust::device_vector<int> d_bucket_positions(NUM_BUCKETS, 0);
+        
+        // 分配输出缓冲区
+        thrust::device_vector<GPUPoint3f> d_sorted_points(input_count);
+        thrust::device_vector<uint64_t> d_sorted_keys(input_count);
+        
+        std::cout << "[DEBUG] Allocated buffers: d_sorted_points.size()=" << d_sorted_points.size() 
+                  << ", d_sorted_keys.size()=" << d_sorted_keys.size() << std::endl;
+        
+        dim3 block(256);
+        dim3 grid((input_count + block.x - 1) / block.x);
+        
+        // Step 1: 分析key范围
+        GPUBucketSort::analyzeKeyRangeKernel<<<grid, block>>>(
+            thrust::raw_pointer_cast(d_voxel_keys_.data()),
+            input_count,
+            thrust::raw_pointer_cast(d_min_key.data()),
+            thrust::raw_pointer_cast(d_max_key.data()));
+        cudaDeviceSynchronize();
+        
+        uint64_t min_key = d_min_key[0];
+        uint64_t max_key = d_max_key[0];
+        uint64_t key_range = max_key - min_key;
+        
+        if (key_range == 0) {
+            std::cout << "[INFO] All keys identical, skipping bucket sort" << std::endl;
+            return true;
+        }
+        
+        // Step 2: 计算桶索引
+        GPUBucketSort::computeBucketIndicesKernel<<<grid, block>>>(
+            thrust::raw_pointer_cast(d_voxel_keys_.data()),
+            thrust::raw_pointer_cast(d_bucket_indices.data()),
+            input_count,
+            min_key,
+            key_range,
+            NUM_BUCKETS);
+        cudaDeviceSynchronize();
+        
+        // Step 3: 统计桶大小
+        GPUBucketSort::countBucketSizesKernel<<<grid, block>>>(
+            thrust::raw_pointer_cast(d_bucket_indices.data()),
+            thrust::raw_pointer_cast(d_bucket_counts.data()),
+            input_count,
+            NUM_BUCKETS);
+        cudaDeviceSynchronize();
+        
+        // Step 4: 计算桶偏移
+        dim3 single_block(1);
+        dim3 single_grid(1);
+        GPUBucketSort::computeBucketOffsetsKernel<<<single_grid, single_block>>>(
+            thrust::raw_pointer_cast(d_bucket_counts.data()),
+            thrust::raw_pointer_cast(d_bucket_offsets.data()),
+            NUM_BUCKETS);
+        cudaDeviceSynchronize();
+        
+        // Step 5: 分配到桶
+        GPUBucketSort::distributeToBucketsKernel<<<grid, block>>>(
+            thrust::raw_pointer_cast(d_temp_points_.data()),
+            thrust::raw_pointer_cast(d_voxel_keys_.data()),
+            thrust::raw_pointer_cast(d_bucket_indices.data()),
+            thrust::raw_pointer_cast(d_bucket_offsets.data()),
+            thrust::raw_pointer_cast(d_sorted_points.data()),
+            thrust::raw_pointer_cast(d_sorted_keys.data()),
+            thrust::raw_pointer_cast(d_bucket_positions.data()),
+            input_count);
+        cudaDeviceSynchronize();
+        
+        // Step 6: 桶内排序
+        std::cout << "[DEBUG] Starting radix sort within buckets..." << std::endl;
+        auto radix_start = std::chrono::high_resolution_clock::now();
+        
+        // 分配临时缓冲区用于基数排序
+        if (d_radix_temp_points_.size() < input_count) {
+            d_radix_temp_points_.resize(input_count);
+            d_radix_temp_keys_.resize(input_count);
+        }
+        
+        // 启动基数排序内核
+        dim3 bucket_grid(NUM_BUCKETS);  // 每个桶一个block
+        dim3 bucket_block(32);          // 🚀 每个桶使用一个warp（32线程）
+        
+        GPUBucketSort::radixSortWithinBucketsKernel<<<bucket_grid, bucket_block>>>(
+            thrust::raw_pointer_cast(d_sorted_points.data()),
+            thrust::raw_pointer_cast(d_sorted_keys.data()),
+            thrust::raw_pointer_cast(d_radix_temp_points_.data()),
+            thrust::raw_pointer_cast(d_radix_temp_keys_.data()),
+            thrust::raw_pointer_cast(d_bucket_offsets.data()),
+            thrust::raw_pointer_cast(d_bucket_counts.data()),
+            NUM_BUCKETS);
+        
+        /* 🚫 注释掉插入排序实验
+        // 🔧 实验：使用简单的插入排序而不是基数排序
+        dim3 bucket_grid((NUM_BUCKETS + 255) / 256);  // 每256个桶为一个block
+        dim3 bucket_block(256);
+        
+        GPUBucketSort::sortWithinBucketsKernel<<<bucket_grid, bucket_block>>>(
+            thrust::raw_pointer_cast(d_sorted_points.data()),
+            thrust::raw_pointer_cast(d_sorted_keys.data()),
+            thrust::raw_pointer_cast(d_bucket_offsets.data()),
+            thrust::raw_pointer_cast(d_bucket_counts.data()),
+            NUM_BUCKETS);
+        */
+    
+    cudaDeviceSynchronize();
+    
+    auto radix_end = std::chrono::high_resolution_clock::now();
+    float radix_time = std::chrono::duration<float, std::milli>(radix_end - radix_start).count();
+    std::cout << "[DEBUG] Radix sort completed in " << radix_time << " ms" << std::endl;
+        
+        // 🔧 修复：只复制实际数据，不复制整个缓冲区
+        std::cout << "[DEBUG] Before copy: d_temp_points_.size()=" << d_temp_points_.size() 
+                  << ", d_voxel_keys_.size()=" << d_voxel_keys_.size() << std::endl;
+        
+        d_temp_points_.resize(input_count);
+        d_voxel_keys_.resize(input_count);
+        thrust::copy_n(d_sorted_points.begin(), input_count, d_temp_points_.begin());
+        thrust::copy_n(d_sorted_keys.begin(), input_count, d_voxel_keys_.begin());
+        
+        std::cout << "[DEBUG] After copy: d_temp_points_.size()=" << d_temp_points_.size() 
+                  << ", d_voxel_keys_.size()=" << d_voxel_keys_.size() << std::endl;
+        
+        std::cout << "[INFO] GPU bucket sort completed successfully" << std::endl;
+        return true;
+        
+    } catch (const std::exception& e) {
+        std::cerr << "[ERROR] GPU bucket sort failed: " << e.what() << std::endl;
+        return false;
+    }
+}

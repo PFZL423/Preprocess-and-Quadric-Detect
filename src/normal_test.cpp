@@ -60,18 +60,18 @@ private:
     void loadParameters()
     {
         // 从参数服务器加载配置
-        nh_.param<int>("max_points", config_.max_points, 6000);
+        nh_.param<int>("max_points", config_.max_points, 3200);
         
         // 预处理参数 - 调整为更适合椭球的参数
-        nh_.param<float>("preprocess/voxel_size", config_.preprocess.voxel_size, 0.05f);  // 稍微增大体素
+        nh_.param<float>("preprocess/voxel_size", config_.preprocess.voxel_size, 0.08f);  // 稍微增大体素
         nh_.param<bool>("preprocess/compute_normals", config_.preprocess.compute_normals, true);
         nh_.param<float>("preprocess/normal_radius", config_.preprocess.normal_radius, 0.15f); // 增大搜索半径
         nh_.param<int>("preprocess/normal_k", config_.preprocess.normal_k, 12);  // 减少期望邻居数
         
-        // 离群点移除参数 - 放宽要求
-        nh_.param<bool>("preprocess/enable_outlier_removal", config_.preprocess.enable_outlier_removal, false); // 暂时关闭
-        nh_.param<float>("preprocess/radius_search", config_.preprocess.radius_search, 0.08f);
-        nh_.param<int>("preprocess/min_radius_neighbors", config_.preprocess.min_radius_neighbors, 3);
+        // 离群点移除参数 - 放宽要求 
+        nh_.param<bool>("preprocess/enable_outlier_removal", config_.preprocess.enable_outlier_removal, true); // 🔧 先关闭调试
+        nh_.param<float>("preprocess/radius_search", config_.preprocess.radius_search, 0.15f); // 🔧 增大搜索半径，与法线计算一致
+        nh_.param<int>("preprocess/min_radius_neighbors", config_.preprocess.min_radius_neighbors, 2); // 🔧 降低最少邻居要求
         
         // 强制启用法线计算
         config_.preprocess.compute_normals = true;
@@ -81,7 +81,9 @@ private:
         ROS_INFO("  Voxel size: %.3f (larger for less density)", config_.preprocess.voxel_size);
         ROS_INFO("  Normal radius: %.3f (larger search)", config_.preprocess.normal_radius);
         ROS_INFO("  Normal k: %d (fewer required neighbors)", config_.preprocess.normal_k);
-        ROS_INFO("  Outlier removal: %s (disabled for testing)", config_.preprocess.enable_outlier_removal ? "enabled" : "disabled");
+        ROS_INFO("  Outlier removal: %s (radius=%.3f, min_neighbors=%d)", 
+                 config_.preprocess.enable_outlier_removal ? "enabled" : "disabled",
+                 config_.preprocess.radius_search, config_.preprocess.min_radius_neighbors);
     }
     
     void cloudCallback(const sensor_msgs::PointCloud2::ConstPtr& msg)
@@ -116,6 +118,23 @@ private:
             
             ROS_INFO("Processing %zu points with GPU preprocessor...", cloud->size());
             
+            // 🔍 添加输入点云统计，帮助调试空间分布
+            float min_x = std::numeric_limits<float>::max();
+            float max_x = std::numeric_limits<float>::lowest();
+            float min_y = std::numeric_limits<float>::max();
+            float max_y = std::numeric_limits<float>::lowest();
+            float min_z = std::numeric_limits<float>::max();
+            float max_z = std::numeric_limits<float>::lowest();
+            
+            for (const auto& pt : cloud->points) {
+                min_x = std::min(min_x, pt.x); max_x = std::max(max_x, pt.x);
+                min_y = std::min(min_y, pt.y); max_y = std::max(max_y, pt.y);
+                min_z = std::min(min_z, pt.z); max_z = std::max(max_z, pt.z);
+            }
+            
+            ROS_INFO("Input cloud bounds: X[%.3f, %.3f] Y[%.3f, %.3f] Z[%.3f, %.3f]",
+                     min_x, max_x, min_y, max_y, min_z, max_z);
+            
             // GPU预处理
             ProcessingResult result = gpu_preprocessor_->process(cloud, config_.preprocess);
             
@@ -126,6 +145,30 @@ private:
             ROS_INFO("Output: %zu points with normals: %s", 
                      result.getPointCount(), 
                      result.hasNormals() ? "YES" : "NO");
+            
+            // 🔍 添加输出点云统计，检查是否存在不对称过滤
+            if (result.hasNormals()) {
+                std::vector<GPUPointNormal3f> output_points = result.downloadPointsWithNormals();
+                float out_min_x = std::numeric_limits<float>::max();
+                float out_max_x = std::numeric_limits<float>::lowest();
+                float out_min_y = std::numeric_limits<float>::max();
+                float out_max_y = std::numeric_limits<float>::lowest();
+                float out_min_z = std::numeric_limits<float>::max();
+                float out_max_z = std::numeric_limits<float>::lowest();
+                
+                for (const auto& pt : output_points) {
+                    out_min_x = std::min(out_min_x, pt.x); out_max_x = std::max(out_max_x, pt.x);
+                    out_min_y = std::min(out_min_y, pt.y); out_max_y = std::max(out_max_y, pt.y);
+                    out_min_z = std::min(out_min_z, pt.z); out_max_z = std::max(out_max_z, pt.z);
+                }
+                
+                ROS_INFO("Output cloud bounds: X[%.3f, %.3f] Y[%.3f, %.3f] Z[%.3f, %.3f]",
+                         out_min_x, out_max_x, out_min_y, out_max_y, out_min_z, out_max_z);
+                ROS_INFO("Bounds change: X(%.3f) Y(%.3f) Z(%.3f)",
+                         (max_x - min_x) - (out_max_x - out_min_x),
+                         (max_y - min_y) - (out_max_y - out_min_y),
+                         (max_z - min_z) - (out_max_z - out_min_z));
+            }
             
             // 发布结果
             publishResults(result, msg->header);
